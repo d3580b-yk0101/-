@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高機能 運行管理タイマー</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; background-color: #222; color: #fff; padding: 10px; margin: 0; }
+        .container { max-width: 450px; margin: 0 auto; }
+        .timer-box { border: 2px solid #555; padding: 12px; margin: 10px auto; border-radius: 10px; background-color: #333; position: relative; }
+        .time { font-size: 2.5rem; font-weight: bold; font-family: monospace; color: #0f0; }
+        .minus-time { color: #ff3333 !important; }
+        .status-time { color: #ff9900; }
+        button { font-size: 1.1rem; padding: 12px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        .btn-start { background-color: #007bff; color: white; }
+        .btn-drive { background-color: #28a745; color: white; }
+        .btn-rest { background-color: #dc3545; color: white; }
+        .btn-reset { background-color: #6c757d; color: white; font-size: 0.9rem; padding: 5px 10px; }
+        .btn-switch { background-color: #17a2b8; color: white; width: 90%; margin-top: 15px; }
+        button:disabled { background-color: #555; color: #888; cursor: not-allowed; }
+        
+        /* 表示・非表示の制御（バグ修正箇所） */
+        .page { display: none; }
+        .active { display: block !important; }
+        
+        .data-row { display: flex; justify-content: space-between; padding: 8px 20px; border-bottom: 1px solid #444; font-size: 1.1rem; }
+    </style>
+</head>
+<body>
+<div class="container">
+
+    <h2>運行管理タイマー</h2>
+
+    <div id="page-main" class="page active">
+        <div class="timer-box">
+            <div>積算時間（総稼働時間）</div>
+            <div id="total-time" class="time">00:00:00</div>
+            <button class="btn-reset" onclick="resetTotalStep1()">積算リセット</button>
+        </div>
+
+        <div class="timer-box">
+            <div id="status-label">ステータス: 停止中</div>
+            <div id="status-time" class="time status-time">04:00:00</div>
+            <button class="btn-reset" onclick="resetStatusTimer()">タイマーリセット</button>
+        </div>
+
+        <button id="btn-start" class="btn-start" onclick="startTotal()">運行開始</button>
+        <button id="btn-drive" class="btn-drive" onclick="switchToDrive()" disabled>運行</button>
+        <button id="btn-rest" class="btn-rest" onclick="switchToRest()" disabled>休憩</button>
+    </div>
+
+    <div id="page-dash" class="page">
+        <div class="timer-box">
+            <h3>運行データダッシュボード</h3>
+            <div class="data-row">
+                <span>合計 運行時間:</span>
+                <span id="dash-drive-total" style="color:#28a745; font-weight:bold;">00:00:00</span>
+            </div>
+            <div class="data-row">
+                <span>合計 休憩時間:</span>
+                <span id="dash-rest-total" style="color:#dc3545; font-weight:bold;">00:00:00</span>
+            </div>
+            <hr style="border-color:#555;">
+            <div class="data-row" style="font-size: 1.3rem; font-weight: bold;">
+                <span>運行＋休憩 合算:</span>
+                <span id="dash-combined-total" style="color:#0f0;">00:00:00</span>
+            </div>
+        </div>
+    </div>
+
+    <button class="btn-switch" onclick="togglePage()">表示切り替え (メイン / ダッシュ)</button>
+
+</div>
+
+<script>
+    let totalSeconds = 0;
+    let driveTotalSeconds = 0;
+    let restTotalSeconds = 0;
+    let currentMode = 'stop';
+    let statusSeconds = 0;
+    let restDuration = 0;
+    let mainInterval;
+    let wakeLock = null;
+
+    async function requestWakeLock() {
+        try { if ('wakeLock' in navigator) { wakeLock = await navigator.wakeLock.request('screen'); } } 
+        catch (err) { console.log(err); }
+    }
+
+    function formatTime(sec) {
+        const isMinus = sec < 0;
+        const absSec = Math.abs(sec);
+        let h = Math.floor(absSec / 3600).toString().padStart(2, '0');
+        let m = Math.floor((absSec % 3600) / 60).toString().padStart(2, '0');
+        let s = (absSec % 60).toString().padStart(2, '0');
+        return `${isMinus ? '-' : ''}${h}:${m}:${s}`;
+    }
+
+    function startTotal() {
+        requestWakeLock();
+        document.getElementById('btn-start').disabled = true;
+        document.getElementById('btn-drive').disabled = false;
+        document.getElementById('btn-rest').disabled = false;
+        
+        currentMode = 'drive';
+        statusSeconds = 4 * 3600;
+        document.getElementById('status-label').innerText = "ステータス: 運行中";
+
+        mainInterval = setInterval(() => {
+            totalSeconds++;
+            document.getElementById('total-time').innerText = formatTime(totalSeconds);
+
+            if (currentMode === 'drive') {
+                statusSeconds--;
+                driveTotalSeconds++;
+            } else if (currentMode === 'rest') {
+                statusSeconds--;
+                restTotalSeconds++;
+                restDuration++;
+            }
+
+            const statusTarget = document.getElementById('status-time');
+            statusTarget.innerText = formatTime(statusSeconds);
+            if (statusSeconds < 0) {
+                statusTarget.classList.add('minus-time');
+            } else {
+                statusTarget.classList.remove('minus-time');
+            }
+
+            updateDashboard();
+        }, 1000);
+    }
+
+    function switchToDrive() {
+        if (currentMode === 'rest' && restDuration < 600) {
+            const confirmLeave = confirm(`まだ休憩開始から約${Math.floor(restDuration/60)}分です。10分未満の休憩はカウントされませんが、運行に戻りますか？`);
+            if (!confirmLeave) return;
+        }
+        currentMode = 'drive';
+        statusSeconds = 4 * 3600;
+        document.getElementById('status-label').innerText = "ステータス: 運行中";
+    }
+
+    function switchToRest() {
+        currentMode = 'rest';
+        statusSeconds = 30 * 60;
+        restDuration = 0;
+        document.getElementById('status-label').innerText = "ステータス: 休憩中";
+    }
+
+    function resetStatusTimer() {
+        if (currentMode === 'drive') statusSeconds = 4 * 3600;
+        if (currentMode === 'rest') { statusSeconds = 30 * 60; restDuration = 0; }
+        document.getElementById('status-time').innerText = formatTime(statusSeconds);
+        document.getElementById('status-time').classList.remove('minus-time');
+    }
+
+    function resetTotalStep1() {
+        const check = confirm("【1段階リセット】現在の積算時間をクリアしますか？");
+        if (check) {
+            totalSeconds = 0;
+            driveTotalSeconds = 0;
+            restTotalSeconds = 0;
+            document.getElementById('total-time').innerText = formatTime(0);
+            updateDashboard();
+            
+            setTimeout(() => {
+                const deepCheck = confirm("【2段階リセット】アプリを完全に初期状態に戻しますか？");
+                if (deepCheck) {
+                    clearInterval(mainInterval);
+                    currentMode = 'stop';
+                    statusSeconds = 4 * 3600;
+                    document.getElementById('status-time').innerText = formatTime(statusSeconds);
+                    document.getElementById('status-time').classList.remove('minus-time');
+                    document.getElementById('status-label').innerText = "ステータス: 停止中";
+                    document.getElementById('btn-start').disabled = false;
+                    document.getElementById('btn-drive').disabled = true;
+                    document.getElementById('btn-rest').disabled = true;
+                }
+            }, 300);
+        }
+    }
+
+    function updateDashboard() {
+        document.getElementById('dash-drive-total').innerText = formatTime(driveTotalSeconds);
+        document.getElementById('dash-rest-total').innerText = formatTime(restTotalSeconds);
+        document.getElementById('dash-combined-total').innerText = formatTime(driveTotalSeconds + restTotalSeconds);
+    }
+
+    // 画面切り替えロジック（修正済み）
+    function togglePage() {
+        const mainPage = document.getElementById('page-main');
+        const dashPage = document.getElementById('page-dash');
+        if (mainPage.classList.contains('active')) {
+            mainPage.classList.remove('active');
+            dashPage.classList.add('active'); // 正しく修正
+        } else {
+            dashPage.classList.remove('active');
+            mainPage.classList.add('active');
+        }
+    }
+</script>
+</body>
+</html>
